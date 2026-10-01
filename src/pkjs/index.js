@@ -303,7 +303,7 @@ function decodeWatchSettingsSnapshot(payload) {
 
 function openConfigurationPage(settings) {
   var snapshot = settings || loadFullSettings();
-  var configUrl = 'https://themott27.github.io/Brolly-v3-Settings/v3.3.0/' +
+  var configUrl = 'https://themott27.github.io/Brolly-v3-Settings/v3.4.0/' +
                   '#settings=' + encodeURIComponent(JSON.stringify(snapshot));
   Pebble.openURL(configUrl);
 }

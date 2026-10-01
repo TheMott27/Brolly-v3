@@ -1033,8 +1033,52 @@
                 },
                 {
                     "type": "font",
-                    "name": "FONT_ROMAN_SERIF_17",
+                    "name": "FONT_SBS_TRADITIONAL_15",
                     "file": "fonts/Lora-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "chalk"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_SBS_THIN_11",
+                    "file": "fonts/NunitoSans-ExtraLight.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "chalk"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_SBS_OVERSIZE_8",
+                    "file": "fonts/Oswald-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "chalk"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_SBS_OVERSIZE_9",
+                    "file": "fonts/Oswald-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "chalk"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_ROMAN_SERIF_17",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1047,7 +1091,7 @@
                 {
                     "type": "font",
                     "name": "FONT_ROMAN_SERIF_23",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1060,7 +1104,7 @@
                 {
                     "type": "font",
                     "name": "FONT_ROMAN_SERIF_26",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1073,7 +1117,7 @@
                 {
                     "type": "font",
                     "name": "FONT_ROMAN_SERIF_30",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1086,7 +1130,7 @@
                 {
                     "type": "font",
                     "name": "FONT_ROMAN_SERIF_36",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1099,7 +1143,7 @@
                 {
                     "type": "font",
                     "name": "FONT_SBS_ROMAN_SERIF_13",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1112,7 +1156,7 @@
                 {
                     "type": "font",
                     "name": "FONT_SBS_ROMAN_SERIF_15",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1125,7 +1169,7 @@
                 {
                     "type": "font",
                     "name": "FONT_SBS_ROMAN_SERIF_17",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1138,7 +1182,7 @@
                 {
                     "type": "font",
                     "name": "FONT_SBS_ROMAN_SERIF_19",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1151,7 +1195,7 @@
                 {
                     "type": "font",
                     "name": "FONT_SBS_ROMAN_SERIF_23",
-                    "file": "fonts/Lora-Regular.ttf",
+                    "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
                         "emery",
@@ -1178,5 +1222,5 @@
             "watchface": true
         }
     },
-    "version": "3.3.0"
+    "version": "3.4.0"
 }

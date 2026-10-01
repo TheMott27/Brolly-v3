@@ -81,6 +81,7 @@ static int round_content_radius(int half_extent) {
 #define PERSIST_SUNRISE_MINUTE  7
 #define PERSIST_SUNSET_HOUR     8
 #define PERSIST_SUNSET_MINUTE   9
+#define PERSIST_COMPACT_NUMBER_SIZES 10
 
 // AppMessage keys used only for settings snapshot synchronisation.
 #define KEY_REQUEST_SETTINGS  163
@@ -200,6 +201,22 @@ typedef struct {
   GRect city_rect;
 } ComplicationRenderCache;
 static ComplicationRenderCache s_complication_cache;
+
+// Exact visible dial content is cached during the background paint on colour
+// targets. The complication layer uses this cache only to choose a clear
+// existing lane; it never moves dial labels, icons, or watch hands. B/W uses
+// a conservative bound based on the measured largest rendered dial item so
+// that the Aplite-class heap retains adequate operating headroom.
+#ifndef PBL_BW
+typedef struct {
+  bool number_valid;
+  bool icon_valid;
+  GRect number_rect;
+  GRect icon_rect;
+} DialContentBounds;
+static DialContentBounds s_dial_content_bounds[12];
+#endif
+static bool s_dial_content_bounds_valid = false;
 
 static Settings  s_settings;
 static int8_t    s_icons[24];
@@ -626,21 +643,48 @@ static void compute_markers(void) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Font loading
 // ─────────────────────────────────────────────────────────────────────────────
+#ifndef PBL_BW
 static uint32_t get_font_resource_id(uint8_t font_id, uint8_t size_idx) {
 #ifdef PBL_BW
   return 0; // Use system fonts on black-and-white targets
+#else
+#if defined(PBL_PLATFORM_BASALT) || defined(PBL_PLATFORM_CHALK)
+  // Basalt's compact rectangle and Chalk's usable circular dial need a smaller
+  // optical baseline. Size 3 intentionally equals their former Size 1.
+  static const uint32_t font_resources[7][5] = {
+    { RESOURCE_ID_FONT_DIGITAL_14, RESOURCE_ID_FONT_DIGITAL_18,
+      RESOURCE_ID_FONT_DIGITAL_18, RESOURCE_ID_FONT_DIGITAL_26,
+      RESOURCE_ID_FONT_DIGITAL_30 },
+    { RESOURCE_ID_FONT_STANDARD_14, RESOURCE_ID_FONT_STANDARD_18,
+      RESOURCE_ID_FONT_STANDARD_18, RESOURCE_ID_FONT_STANDARD_26,
+      RESOURCE_ID_FONT_STANDARD_30 },
+    { RESOURCE_ID_FONT_TRADITIONAL_17, RESOURCE_ID_FONT_TRADITIONAL_23,
+      RESOURCE_ID_FONT_TRADITIONAL_23, RESOURCE_ID_FONT_TRADITIONAL_28,
+      RESOURCE_ID_FONT_TRADITIONAL_34 },
+    { RESOURCE_ID_FONT_THIN_18, RESOURCE_ID_FONT_SBS_THIN_20,
+      RESOURCE_ID_FONT_THIN_22, RESOURCE_ID_FONT_THIN_26,
+      RESOURCE_ID_FONT_THIN_31 },
+    { RESOURCE_ID_FONT_OVERSIZE_11, RESOURCE_ID_FONT_OVERSIZE_13,
+      RESOURCE_ID_FONT_OVERSIZE_15, RESOURCE_ID_FONT_OVERSIZE_18,
+      RESOURCE_ID_FONT_OVERSIZE_23 },
+    // Roman Sans is rendered geometrically and does not load a font resource.
+    { 0, 0, 0, 0, 0 },
+    { RESOURCE_ID_FONT_ROMAN_SERIF_17, RESOURCE_ID_FONT_ROMAN_SERIF_23,
+      RESOURCE_ID_FONT_ROMAN_SERIF_26, RESOURCE_ID_FONT_ROMAN_SERIF_30,
+      RESOURCE_ID_FONT_ROMAN_SERIF_36 },
+  };
 #else
   // Each row is remapped so the user-selected preferred former size is Size 3.
   // Sizes 1–2 remain smaller; Sizes 4–5 remain larger.
   static const uint32_t font_resources[7][5] = {
     { RESOURCE_ID_FONT_DIGITAL_22, RESOURCE_ID_FONT_DIGITAL_26,
-      RESOURCE_ID_FONT_DIGITAL_30, RESOURCE_ID_FONT_DIGITAL_36,
+      RESOURCE_ID_FONT_DIGITAL_26, RESOURCE_ID_FONT_DIGITAL_36,
       RESOURCE_ID_FONT_DIGITAL_42 },
     { RESOURCE_ID_FONT_STANDARD_22, RESOURCE_ID_FONT_STANDARD_26,
-      RESOURCE_ID_FONT_STANDARD_30, RESOURCE_ID_FONT_STANDARD_36,
+      RESOURCE_ID_FONT_STANDARD_26, RESOURCE_ID_FONT_STANDARD_36,
       RESOURCE_ID_FONT_STANDARD_42 },
     { RESOURCE_ID_FONT_TRADITIONAL_26, RESOURCE_ID_FONT_TRADITIONAL_28,
-      RESOURCE_ID_FONT_TRADITIONAL_34, RESOURCE_ID_FONT_TRADITIONAL_40,
+      RESOURCE_ID_FONT_TRADITIONAL_28, RESOURCE_ID_FONT_TRADITIONAL_40,
       RESOURCE_ID_FONT_TRADITIONAL_46 },
     { RESOURCE_ID_FONT_THIN_22, RESOURCE_ID_FONT_THIN_26,
       RESOURCE_ID_FONT_THIN_31, RESOURCE_ID_FONT_THIN_36,
@@ -652,8 +696,9 @@ static uint32_t get_font_resource_id(uint8_t font_id, uint8_t size_idx) {
     { 0, 0, 0, 0, 0 },
     { RESOURCE_ID_FONT_ROMAN_SERIF_17, RESOURCE_ID_FONT_ROMAN_SERIF_23,
       RESOURCE_ID_FONT_ROMAN_SERIF_26, RESOURCE_ID_FONT_ROMAN_SERIF_30,
-      RESOURCE_ID_FONT_ROMAN_SERIF_36 }
+      RESOURCE_ID_FONT_ROMAN_SERIF_36 },
   };
+#endif
   if (font_id > 6 || size_idx > 4) return 0;
   return font_resources[font_id][size_idx];
 #endif
@@ -663,15 +708,40 @@ static uint32_t get_sbs_font_resource_id(uint8_t font_id, uint8_t size_idx) {
 #ifdef PBL_BW
   return 0;
 #else
+#if defined(PBL_PLATFORM_BASALT) || defined(PBL_PLATFORM_CHALK)
+  // Keep the same compact optical baseline in side-by-side mode. Size 3 is
+  // the former Size 1; two genuinely smaller and two larger steps remain.
+  static const uint32_t sbs_font_resources[7][5] = {
+    { RESOURCE_ID_FONT_SBS_DIGITAL_10, RESOURCE_ID_FONT_SBS_DIGITAL_12,
+      RESOURCE_ID_FONT_SBS_DIGITAL_12, RESOURCE_ID_FONT_SBS_DIGITAL_16,
+      RESOURCE_ID_FONT_SBS_DIGITAL_18 },
+    { RESOURCE_ID_FONT_SBS_STANDARD_8, RESOURCE_ID_FONT_SBS_STANDARD_10,
+      RESOURCE_ID_FONT_SBS_STANDARD_10, RESOURCE_ID_FONT_SBS_STANDARD_16,
+      RESOURCE_ID_FONT_SBS_STANDARD_18 },
+    { RESOURCE_ID_FONT_SBS_TRADITIONAL_13, RESOURCE_ID_FONT_SBS_TRADITIONAL_15,
+      RESOURCE_ID_FONT_SBS_TRADITIONAL_15, RESOURCE_ID_FONT_SBS_TRADITIONAL_19,
+      RESOURCE_ID_FONT_SBS_TRADITIONAL_23 },
+    { RESOURCE_ID_FONT_SBS_THIN_11, RESOURCE_ID_FONT_SBS_THIN_13,
+      RESOURCE_ID_FONT_SBS_THIN_15, RESOURCE_ID_FONT_SBS_THIN_18,
+      RESOURCE_ID_FONT_SBS_THIN_20 },
+    { RESOURCE_ID_FONT_SBS_OVERSIZE_8, RESOURCE_ID_FONT_SBS_OVERSIZE_9,
+      RESOURCE_ID_FONT_SBS_OVERSIZE_11, RESOURCE_ID_FONT_SBS_OVERSIZE_13,
+      RESOURCE_ID_FONT_SBS_OVERSIZE_15 },
+    { 0, 0, 0, 0, 0 },
+    { RESOURCE_ID_FONT_SBS_ROMAN_SERIF_13, RESOURCE_ID_FONT_SBS_ROMAN_SERIF_15,
+      RESOURCE_ID_FONT_SBS_ROMAN_SERIF_17, RESOURCE_ID_FONT_SBS_ROMAN_SERIF_19,
+      RESOURCE_ID_FONT_SBS_ROMAN_SERIF_23 },
+  };
+#else
   static const uint32_t sbs_font_resources[7][5] = {
     { RESOURCE_ID_FONT_SBS_DIGITAL_14, RESOURCE_ID_FONT_SBS_DIGITAL_16,
-      RESOURCE_ID_FONT_SBS_DIGITAL_18, RESOURCE_ID_FONT_SBS_DIGITAL_20,
+      RESOURCE_ID_FONT_SBS_DIGITAL_16, RESOURCE_ID_FONT_SBS_DIGITAL_20,
       RESOURCE_ID_FONT_SBS_DIGITAL_22 },
     { RESOURCE_ID_FONT_SBS_STANDARD_14, RESOURCE_ID_FONT_SBS_STANDARD_16,
-      RESOURCE_ID_FONT_SBS_STANDARD_19, RESOURCE_ID_FONT_SBS_STANDARD_23,
+      RESOURCE_ID_FONT_SBS_STANDARD_16, RESOURCE_ID_FONT_SBS_STANDARD_23,
       RESOURCE_ID_FONT_SBS_STANDARD_30 },
     { RESOURCE_ID_FONT_SBS_TRADITIONAL_17, RESOURCE_ID_FONT_SBS_TRADITIONAL_19,
-      RESOURCE_ID_FONT_SBS_TRADITIONAL_23, RESOURCE_ID_FONT_SBS_TRADITIONAL_26,
+      RESOURCE_ID_FONT_SBS_TRADITIONAL_19, RESOURCE_ID_FONT_SBS_TRADITIONAL_26,
       RESOURCE_ID_FONT_SBS_TRADITIONAL_30 },
     { RESOURCE_ID_FONT_SBS_THIN_15, RESOURCE_ID_FONT_SBS_THIN_18,
       RESOURCE_ID_FONT_SBS_THIN_20, RESOURCE_ID_FONT_SBS_THIN_24,
@@ -682,12 +752,14 @@ static uint32_t get_sbs_font_resource_id(uint8_t font_id, uint8_t size_idx) {
     { 0, 0, 0, 0, 0 },
     { RESOURCE_ID_FONT_SBS_ROMAN_SERIF_13, RESOURCE_ID_FONT_SBS_ROMAN_SERIF_15,
       RESOURCE_ID_FONT_SBS_ROMAN_SERIF_17, RESOURCE_ID_FONT_SBS_ROMAN_SERIF_19,
-      RESOURCE_ID_FONT_SBS_ROMAN_SERIF_23 }
+      RESOURCE_ID_FONT_SBS_ROMAN_SERIF_23 },
   };
+#endif
   if (font_id > 6 || size_idx > 4) return 0;
   return sbs_font_resources[font_id][size_idx];
 #endif
 }
+#endif // !PBL_BW
 
 // City, date, and temperature retain their original v3.2.0 system font and
 // target-specific scale. Number Font selection applies only to dial numerals.
@@ -724,22 +796,22 @@ static GFont get_number_font(void) {
   // preserve each style's closest available family and use smaller values for
   // the side-by-side layout rather than silently ignoring the setting.
   static const char *bw_fonts[7][5] = {
-    { FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_28_LIGHT_NUMBERS, FONT_KEY_LECO_32_BOLD_NUMBERS, FONT_KEY_LECO_36_BOLD_NUMBERS, FONT_KEY_LECO_42_NUMBERS },
-    { FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_18_BOLD, FONT_KEY_GOTHIC_24, FONT_KEY_GOTHIC_24_BOLD, FONT_KEY_GOTHIC_28 },
-    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_BITHAM_42_LIGHT, FONT_KEY_BITHAM_42_BOLD },
+    { FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_28_LIGHT_NUMBERS, FONT_KEY_LECO_28_LIGHT_NUMBERS, FONT_KEY_LECO_36_BOLD_NUMBERS, FONT_KEY_LECO_42_NUMBERS },
+    { FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_18_BOLD, FONT_KEY_GOTHIC_18_BOLD, FONT_KEY_GOTHIC_24_BOLD, FONT_KEY_GOTHIC_28 },
+    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_42_LIGHT, FONT_KEY_BITHAM_42_BOLD },
     { FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_24, FONT_KEY_GOTHIC_24, FONT_KEY_GOTHIC_28 },
     { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_42_LIGHT, FONT_KEY_BITHAM_42_BOLD },
     { FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_24, FONT_KEY_GOTHIC_28, FONT_KEY_BITHAM_42_LIGHT },
-    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_BITHAM_42_LIGHT, FONT_KEY_BITHAM_42_BOLD }
+    { FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD },
   };
   static const char *bw_sbs_fonts[7][5] = {
-    { FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_26_BOLD_NUMBERS_AM_PM, FONT_KEY_LECO_28_LIGHT_NUMBERS, FONT_KEY_LECO_32_BOLD_NUMBERS },
-    { FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_14_BOLD, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_18_BOLD, FONT_KEY_GOTHIC_24 },
-    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_BITHAM_42_LIGHT },
+    { FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_20_BOLD_NUMBERS, FONT_KEY_LECO_28_LIGHT_NUMBERS, FONT_KEY_LECO_32_BOLD_NUMBERS },
+    { FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_14_BOLD, FONT_KEY_GOTHIC_14_BOLD, FONT_KEY_GOTHIC_18_BOLD, FONT_KEY_GOTHIC_24 },
+    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_BITHAM_42_LIGHT },
     { FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_24 },
     { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_BITHAM_42_LIGHT },
     { FONT_KEY_GOTHIC_09, FONT_KEY_GOTHIC_14, FONT_KEY_GOTHIC_18, FONT_KEY_GOTHIC_24, FONT_KEY_GOTHIC_28 },
-    { FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_18_LIGHT_SUBSET, FONT_KEY_BITHAM_30_BLACK, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_BITHAM_42_LIGHT }
+    { FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD, FONT_KEY_DROID_SERIF_28_BOLD },
   };
   s_cached_number_font = fonts_get_system_font(
     (is_sbs ? bw_sbs_fonts : bw_fonts)[fid][sidx]);
@@ -774,7 +846,7 @@ static const char *s_roman_num_strings[12] = {
   "XII","I","II","III","IV","V","VI","VII","VIII","IX","X","XI"
 };
 
-// Roman Sans and Roman Serif are dedicated Roman-numeral font choices. The
+// Roman Sans is the dedicated Roman-numeral font choice. The
 // other five Number Font choices continue to draw standard decimal labels.
 static const char *get_number_string(int h) {
   return number_font_id() >= 5 ? s_roman_num_strings[h] : s_num_strings[h];
@@ -785,8 +857,14 @@ static const char *get_number_string(int h) {
 // platform font-metric rounding and guarantees five genuinely distinct visible
 // sizes. Size 3 is the original geometric renderer's Size 1 (15px).
 static int roman_sans_height(void) {
+#if defined(PBL_PLATFORM_BASALT) || defined(PBL_PLATFORM_CHALK)
+  // Size 3 matches the former compact Size 1 on Basalt and Chalk.
+  static const uint8_t normal_heights[5] = {6, 7, 9, 12, 15};
+  static const uint8_t sbs_heights[5] = {5, 6, 8, 10, 12};
+#else
   static const uint8_t normal_heights[5] = {9, 12, 15, 19, 23};
   static const uint8_t sbs_heights[5] = {8, 10, 12, 14, 16};
+#endif
   uint8_t index = (s_settings.number_size >= 1 && s_settings.number_size <= 5)
                     ? s_settings.number_size - 1 : 2;
   return (s_settings.shake_mode == 3 ? sbs_heights : normal_heights)[index];
@@ -862,6 +940,77 @@ static void draw_number_text(GContext *ctx, int hour_position, GFont font,
   graphics_draw_text(ctx, text, font, bounds,
                      GTextOverflowModeWordWrap, alignment, NULL);
 }
+
+// Cache the exact ink area currently used by a dial numeral. The cached result
+// lets date/temp choose a clear established lane without another font render or
+// a free-form layout solver.
+#ifndef PBL_BW
+static void cache_number_ink_bounds(int hour_position, GRect bounds,
+                                    GTextAlignment alignment) {
+  if (hour_position < 0 || hour_position >= 12) return;
+
+#ifdef PBL_COLOR
+  if (number_font_id() == 5) {
+    int height = roman_sans_height();
+    int width = roman_sans_text_width(get_number_string(hour_position), height);
+    int x = bounds.origin.x;
+    if (alignment == GTextAlignmentCenter) {
+      x += (bounds.size.w - width) / 2;
+    } else if (alignment == GTextAlignmentRight) {
+      x += bounds.size.w - width;
+    }
+    int inset = roman_sans_stroke_width(height) / 2;
+    s_dial_content_bounds[hour_position].number_rect =
+      GRect(x - inset, bounds.origin.y, width + inset * 2, height);
+    s_dial_content_bounds[hour_position].number_valid = true;
+    return;
+  }
+#endif
+
+  InkBounds ib = s_ink[hour_position];
+  if (!ib.valid) return;
+  int width = ib.box_w - ib.left - ib.right;
+  int height = ib.box_h - ib.top - ib.bottom;
+  if (width < 1 || height < 1) return;
+  int x = bounds.origin.x + ib.left;
+  if (alignment == GTextAlignmentCenter) {
+    x = bounds.origin.x + (bounds.size.w - width) / 2;
+  } else if (alignment == GTextAlignmentRight) {
+    x = bounds.origin.x + bounds.size.w - width - ib.right;
+  }
+  s_dial_content_bounds[hour_position].number_rect =
+    GRect(x, bounds.origin.y + ib.top, width, height);
+  s_dial_content_bounds[hour_position].number_valid = true;
+}
+
+static void cache_weather_icon_ink_bounds(int hour_position, GPathIconID icon_id,
+                                          int ox, int oy, int size) {
+  if (hour_position < 0 || hour_position >= 12) return;
+  int min_x, min_y, max_x, max_y;
+  if (!weather_icon_visible_bounds(icon_id, size, &min_x, &min_y, &max_x, &max_y)) {
+    return;
+  }
+  s_dial_content_bounds[hour_position].icon_rect = GRect(
+    ox + min_x, oy + min_y, max_x - min_x + 1, max_y - min_y + 1);
+  s_dial_content_bounds[hour_position].icon_valid = true;
+}
+#else
+static void cache_number_ink_bounds(int hour_position, GRect bounds,
+                                    GTextAlignment alignment) {
+  (void)hour_position;
+  (void)bounds;
+  (void)alignment;
+}
+
+static void cache_weather_icon_ink_bounds(int hour_position, GPathIconID icon_id,
+                                          int ox, int oy, int size) {
+  (void)hour_position;
+  (void)icon_id;
+  (void)ox;
+  (void)oy;
+  (void)size;
+}
+#endif
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1145,6 +1294,14 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
   int sh = bounds.size.h;
   GPoint center = GPoint(sw / 2, sh / 2);
 
+  // Rebuild colour-target visible-content bounds in the same pass that draws
+  // the dial. The complication layer is above this layer, so it sees this exact
+  // frame without another raster pass.
+#ifndef PBL_BW
+  memset(s_dial_content_bounds, 0, sizeof(s_dial_content_bounds));
+  s_dial_content_bounds_valid = false;
+#endif
+
     // Fill background
   graphics_context_set_fill_color(ctx, MONO_COLOR(s_settings.background_color));
   graphics_fill_rect(ctx, bounds, 0, GCornerNone);
@@ -1393,6 +1550,13 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       GColor num_draw_color;
       num_draw_color = (s_settings.icon_color_mode == 2)
         ? MONO_COLOR(s_rainbow_colors[h]) : MONO_COLOR(s_settings.number_color);
+      cache_number_ink_bounds(h, text_rect,
+#ifdef PBL_ROUND
+                               GTextAlignmentCenter
+#else
+                               GTextAlignmentLeft
+#endif
+      );
       draw_number_text(ctx, h, num_font, text_rect,
 #ifdef PBL_ROUND
                          GTextAlignmentCenter,
@@ -1441,6 +1605,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
           weather_icon_match_ink_height(gpath_id, sbs_icon_sz,
                                         &iox, &ioy, &draw_icon_sz);
         }
+        cache_weather_icon_ink_bounds(h, gpath_id, iox, ioy, draw_icon_sz);
         if (s_settings.icon_color_mode == 3) {
           draw_weather_icon_shaded(ctx, gpath_id, iox, ioy, draw_icon_sz);
         } else {
@@ -1509,6 +1674,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
         if (!s_settings.icon_size_manual_override) {
           weather_icon_match_ink_height(gpath_id, icon_sz, &ox, &oy, &draw_icon_sz);
         }
+        cache_weather_icon_ink_bounds(h, gpath_id, ox, oy, draw_icon_sz);
         if (s_settings.icon_color_mode == 3) {
           // Line shading mode: hatched fill with weather colours
           draw_weather_icon_shaded(ctx, gpath_id, ox, oy, draw_icon_sz);
@@ -1632,6 +1798,13 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       } else {
         num_draw_color = MONO_COLOR(s_settings.number_color);
       }
+      cache_number_ink_bounds(h, text_rect,
+#ifdef PBL_ROUND
+                               GTextAlignmentCenter
+#else
+                               GTextAlignmentLeft
+#endif
+      );
       draw_number_text(ctx, h, num_font, text_rect,
 #ifdef PBL_ROUND
                          GTextAlignmentCenter,
@@ -1641,9 +1814,238 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
                          num_draw_color);
     }
   }
+  s_dial_content_bounds_valid = true;
 }
 
 // Complication layer: date + temperature
+static bool rects_overlap_with_margin(GRect a, GRect b, int margin) {
+  return a.origin.x - margin < b.origin.x + b.size.w + margin &&
+         a.origin.x + a.size.w + margin > b.origin.x - margin &&
+         a.origin.y - margin < b.origin.y + b.size.h + margin &&
+         a.origin.y + a.size.h + margin > b.origin.y - margin;
+}
+
+#ifndef PBL_BW
+// Dial-content collision needs the text's actual horizontal footprint, not the
+// deliberately generous half-screen drawing box. This lets colour targets use
+// exact ink-aware fallback rather than treating a safe short move as blocked.
+static GRect complication_text_collision_rect(const char *text, GFont font,
+                                              GRect layout_rect) {
+  if (!text || text[0] == '\0') return GRect(0, 0, 0, 0);
+  GSize size = graphics_text_layout_get_content_size(
+    text, font, GRect(0, 0, layout_rect.size.w, layout_rect.size.h),
+    GTextOverflowModeWordWrap, GTextAlignmentCenter);
+  int width = size.w;
+  if (width < 1) width = 1;
+  if (width > layout_rect.size.w) width = layout_rect.size.w;
+  return GRect(layout_rect.origin.x + (layout_rect.size.w - width) / 2,
+               layout_rect.origin.y, width, layout_rect.size.h);
+}
+
+static int point_cross_product(GPoint a, GPoint b, GPoint c) {
+  return (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+}
+
+static bool point_in_or_on_rect(GPoint point, GRect rect) {
+  return point.x >= rect.origin.x && point.x <= rect.origin.x + rect.size.w &&
+         point.y >= rect.origin.y && point.y <= rect.origin.y + rect.size.h;
+}
+
+static bool point_on_segment(GPoint a, GPoint b, GPoint point) {
+  return point.x >= (a.x < b.x ? a.x : b.x) &&
+         point.x <= (a.x > b.x ? a.x : b.x) &&
+         point.y >= (a.y < b.y ? a.y : b.y) &&
+         point.y <= (a.y > b.y ? a.y : b.y);
+}
+
+static bool line_segments_intersect(GPoint a, GPoint b, GPoint c, GPoint d) {
+  int ab_c = point_cross_product(a, b, c);
+  int ab_d = point_cross_product(a, b, d);
+  int cd_a = point_cross_product(c, d, a);
+  int cd_b = point_cross_product(c, d, b);
+  if (((ab_c > 0 && ab_d < 0) || (ab_c < 0 && ab_d > 0)) &&
+      ((cd_a > 0 && cd_b < 0) || (cd_a < 0 && cd_b > 0))) return true;
+  if (ab_c == 0 && point_on_segment(a, b, c)) return true;
+  if (ab_d == 0 && point_on_segment(a, b, d)) return true;
+  if (cd_a == 0 && point_on_segment(c, d, a)) return true;
+  if (cd_b == 0 && point_on_segment(c, d, b)) return true;
+  return false;
+}
+
+// The rendered hand is approximately 10 px wide. Expanding a candidate text
+// area by its hand half-width plus a small clearance avoids text under a hand
+// without introducing a free-form layout solver.
+static bool hand_intersects_text_rect(GPoint hand_tip, GRect text_rect) {
+  const int margin = s_screen_w >= 200 ? 7 : 5;
+  GRect expanded = GRect(text_rect.origin.x - margin,
+                         text_rect.origin.y - margin,
+                         text_rect.size.w + margin * 2,
+                         text_rect.size.h + margin * 2);
+  if (point_in_or_on_rect(s_dial_center, expanded) ||
+      point_in_or_on_rect(hand_tip, expanded)) return true;
+  GPoint tl = expanded.origin;
+  GPoint tr = GPoint(expanded.origin.x + expanded.size.w, expanded.origin.y);
+  GPoint br = GPoint(expanded.origin.x + expanded.size.w,
+                     expanded.origin.y + expanded.size.h);
+  GPoint bl = GPoint(expanded.origin.x, expanded.origin.y + expanded.size.h);
+  return line_segments_intersect(s_dial_center, hand_tip, tl, tr) ||
+         line_segments_intersect(s_dial_center, hand_tip, tr, br) ||
+         line_segments_intersect(s_dial_center, hand_tip, br, bl) ||
+         line_segments_intersect(s_dial_center, hand_tip, bl, tl);
+}
+#endif
+
+static bool complication_candidate_intersects_hands(GRect date_rect, bool show_date,
+                                                     GRect temp_rect, bool show_temp) {
+#ifdef PBL_BW
+  // Aplite retains the conservative dial-content boxes above. Avoid carrying
+  // an extra line/rectangle solver into the 24 KB application budget.
+  (void)date_rect;
+  (void)show_date;
+  (void)temp_rect;
+  (void)show_temp;
+  return false;
+#else
+  GPoint tips[] = { s_hour_tip, s_minute_tip };
+  for (unsigned int i = 0; i < sizeof(tips) / sizeof(tips[0]); i++) {
+    if ((show_date && hand_intersects_text_rect(tips[i], date_rect)) ||
+        (show_temp && hand_intersects_text_rect(tips[i], temp_rect))) {
+      return true;
+    }
+  }
+  return false;
+#endif
+}
+
+static bool complication_candidate_collides(GRect date_rect, bool show_date,
+                                            GRect temp_rect, bool show_temp) {
+#ifdef PBL_BW
+  // B/W watches retain a compact dynamic bound instead of colour's persistent
+  // per-item cache. It is anchored inward from the same screen edge as labels
+  // and icons, so wide Roman strings such as VIII are conservatively covered.
+  int number_extent = 0;
+  for (int h = 0; h < 12; h++) {
+    if (!s_ink[h].valid) continue;
+    int width = s_ink[h].box_w - s_ink[h].left - s_ink[h].right;
+    int height = s_ink[h].box_h - s_ink[h].top - s_ink[h].bottom;
+    if (width > number_extent) number_extent = width;
+    if (height > number_extent) number_extent = height;
+  }
+  number_extent += 4;  // measured glyph ink plus the drawn-stroke clearance
+  if (number_extent < 32) number_extent = 32;
+  int icon_size = manual_icon_size();
+  int icon_extent = icon_size == 1 ? 18 : icon_size == 2 ? 22 :
+                    icon_size == 3 ? 26 : icon_size == 4 ? 30 : 36;
+  int content_extent = weather_icons_are_visible() && icon_extent > number_extent
+                         ? icon_extent : number_extent;
+  if (content_extent > 64) content_extent = 64;
+  int edge_gap = (s_screen_w >= 200 ? 8 : 5) * 3 / 2;
+  for (int h = 0; h < 12; h++) {
+    if (!weather_icons_are_visible() && !number_is_visible(h)) continue;
+    GPoint point = s_perimeter_cache[h];
+    int x = point.x - content_extent / 2;
+    int y = point.y - content_extent / 2;
+    if (h == 11 || h == 0 || h == 1) y = edge_gap;
+    else if (h == 5 || h == 6 || h == 7) y = s_screen_h - edge_gap - content_extent;
+    else if (h == 8 || h == 9 || h == 10) x = edge_gap;
+    else x = s_screen_w - edge_gap - content_extent;
+    GRect content = GRect(x, y, content_extent, content_extent);
+    if ((show_date && rects_overlap_with_margin(date_rect, content, 2)) ||
+        (show_temp && rects_overlap_with_margin(temp_rect, content, 2))) {
+      return true;
+    }
+  }
+  return false;
+#else
+  if (!s_dial_content_bounds_valid) return false;
+  int margin = s_screen_w >= 200 ? 3 : 2;
+  for (int h = 0; h < 12; h++) {
+#ifdef PBL_BW
+    bool number_valid = (s_dial_number_valid_mask & (uint16_t)(1U << h)) != 0;
+    bool icon_valid = (s_dial_icon_valid_mask & (uint16_t)(1U << h)) != 0;
+    GRect number_rect = s_dial_number_bounds[h];
+    GRect icon_rect = s_dial_icon_bounds[h];
+#else
+    DialContentBounds *slot = &s_dial_content_bounds[h];
+    bool number_valid = slot->number_valid;
+    bool icon_valid = slot->icon_valid;
+    GRect number_rect = slot->number_rect;
+    GRect icon_rect = slot->icon_rect;
+#endif
+    if (number_valid &&
+        ((show_date && rects_overlap_with_margin(date_rect, number_rect, margin)) ||
+         (show_temp && rects_overlap_with_margin(temp_rect, number_rect, margin)))) {
+      return true;
+    }
+    if (icon_valid &&
+        ((show_date && rects_overlap_with_margin(date_rect, icon_rect, margin)) ||
+         (show_temp && rects_overlap_with_margin(temp_rect, icon_rect, margin)))) {
+      return true;
+    }
+  }
+  return false;
+#endif
+}
+
+static int choose_complication_center(int preferred_cx, int preferred_y,
+                                      int *selected_y, int box_w, GFont font,
+                                      const char *date_text, bool show_date,
+                                      const char *temp_text, bool show_temp) {
+  const int center_cx = s_screen_w / 2;
+  const int top_y = POS_Y(45);
+  const int bottom_y = POS_Y(105);
+  bool preferred_top = preferred_y == top_y;
+  int candidates_x[4];
+  int candidates_y[4];
+  int candidate_count = 0;
+
+  // First use the deterministic minute/hour/Roman result. The remaining
+  // candidates are bounded safety lanes only: same-lane centre, then the
+  // centre and same-side position in the opposite vertical lane. There is no
+  // inward nudge and no opposite-corner jump.
+  candidates_x[candidate_count] = preferred_cx;
+  candidates_y[candidate_count++] = preferred_y;
+  if (preferred_cx != center_cx) {
+    candidates_x[candidate_count] = center_cx;
+    candidates_y[candidate_count++] = preferred_y;
+  }
+  candidates_x[candidate_count] = center_cx;
+  candidates_y[candidate_count++] = preferred_top ? bottom_y : top_y;
+  candidates_x[candidate_count] = preferred_cx;
+  candidates_y[candidate_count++] = preferred_top ? bottom_y : top_y;
+
+  for (int i = 0; i < candidate_count; i++) {
+    int box_x = candidates_x[i] - box_w / 2;
+    GRect date_layout = GRect(box_x, candidates_y[i] - 10, box_w, 20);
+    int temp_y = show_date ? candidates_y[i] + 8 : candidates_y[i] - 10;
+    GRect temp_layout = GRect(box_x, temp_y, box_w, 20);
+#ifdef PBL_BW
+    // Keep Aplite's calculation-only conservative footprint.
+    GRect date_rect = show_date
+      ? GRect(candidates_x[i] - 28, date_layout.origin.y, 56, date_layout.size.h)
+      : GRect(0, 0, 0, 0);
+    GRect temp_rect = show_temp
+      ? GRect(candidates_x[i] - 24, temp_layout.origin.y, 48, temp_layout.size.h)
+      : GRect(0, 0, 0, 0);
+    (void)font;
+    (void)date_text;
+    (void)temp_text;
+#else
+    GRect date_rect = complication_text_collision_rect(date_text, font, date_layout);
+    GRect temp_rect = complication_text_collision_rect(temp_text, font, temp_layout);
+#endif
+    if (!complication_candidate_collides(date_rect, show_date, temp_rect, show_temp) &&
+        !complication_candidate_intersects_hands(date_rect, show_date,
+                                                 temp_rect, show_temp)) {
+      *selected_y = candidates_y[i];
+      return candidates_x[i];
+    }
+  }
+  // If all bounded safety lanes are occupied, retain the deterministic lane.
+  *selected_y = preferred_y;
+  return preferred_cx;
+}
+
 static void rebuild_complication_cache(void) {
   ComplicationRenderCache *cache = &s_complication_cache;
   int sw = s_screen_w;
@@ -1692,6 +2094,20 @@ static void rebuild_complication_cache(void) {
     if (cur_hour12 == 4 || cur_hour12 == 5) comp_cx = left_comp_cx;
     else if (cur_hour12 == 6 || cur_hour12 == 7) comp_cx = right_comp_cx;
   }
+  // Roman VIII is widest on the left. For hours 4/5, move the complication
+  // into the top lane instead of placing it in the lower-left numeral area or
+  // beneath the hour hand. At minutes 45-59 the minute hand occupies the
+  // upper-left sector, so use top-right; otherwise use top-left.
+  if (!comp_at_top && number_font_id() >= 5 &&
+      (cur_hour12 == 4 || cur_hour12 == 5)) {
+    comp_y = POS_Y(45);
+    comp_at_top = true;
+    comp_cx = (cur_min >= 45) ? right_comp_cx : left_comp_cx;
+  }
+
+  comp_cx = choose_complication_center(comp_cx, comp_y, &comp_y, box_w, cache->font,
+                                       cache->date_text, cache->show_date,
+                                       cache->temp_text, cache->show_temp);
 
   int box_x = comp_cx - box_w / 2;
   cache->date_rect = GRect(box_x, comp_y - 10, box_w, 20);
@@ -1856,12 +2272,14 @@ static void mark_shake_content_dirty(void) {
   // Only the on-shake icon mode changes the background.
   if (s_settings.shake_mode == 0) layer_mark_dirty(s_bg_layer);
 
-  // Repaint complications only when at least one complication is itself tied to
-  // the shake state. This avoids needless text layout on icon-only shakes.
+  // Icon appearance changes the date/temp fallback lane, even when the text
+  // itself is always visible. City text remains deliberately non-blocking.
   bool complication_depends_on_shake =
     s_settings.date_visible == 2 ||
     s_settings.temp_visible == 2 ||
-    s_settings.city_display_mode == 1;
+    s_settings.city_display_mode == 1 ||
+    s_settings.date_visible == 0 ||
+    s_settings.temp_visible == 0;
   if (complication_depends_on_shake) {
     invalidate_complication_cache();
     layer_mark_dirty(s_complication_layer);
@@ -2140,6 +2558,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     persist_write_data(PERSIST_ICONS, s_icons, sizeof(s_icons));
     s_displayed_icon_window_valid = false;
     bg_dirty = true;
+    complication_dirty = true;
   }
   if (temperature_changed) {
     persist_write_int(PERSIST_TEMP_C, (int32_t)s_temp_c);
@@ -2217,6 +2636,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_ink_valid = false;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
 
@@ -2295,6 +2715,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_ink_valid = false;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
 
@@ -2308,6 +2729,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_settings.icon_size = packed_size;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
   t = dict_find(iter, 152); // KEY_ICON_SIZE_SAME_AS_FONT
@@ -2317,6 +2739,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_settings.icon_size_manual_override = manual_override;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
   t = dict_find(iter, 154); // KEY_NUMBERS_VISIBILITY
@@ -2331,6 +2754,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_settings.icon_size = packed_size;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
   UPDATE_U8_SETTING(158, display_mode, complication_dirty = true);
@@ -2354,6 +2778,7 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       s_settings.icon_color_mode = value;
       settings_changed = true;
       bg_dirty = true;
+      complication_dirty = true;
     }
   }
 
@@ -2458,6 +2883,25 @@ static void window_load(Window *window) {
     s_settings.icon_color_mode = 0;
     settings_need_write = true;
   }
+#if defined(PBL_PLATFORM_BASALT) || defined(PBL_PLATFORM_CHALK)
+  // Size 3 now matches the former compact Size 1 baseline. Preserve prior
+  // small selections at their closest new slider step, once per watch.
+  if (!persist_exists(PERSIST_COMPACT_NUMBER_SIZES)) {
+    if (s_settings.number_size == 1) {
+      s_settings.number_size = 3;
+      settings_need_write = true;
+    } else if (s_settings.number_size == 2) {
+      s_settings.number_size = 4;
+      settings_need_write = true;
+    } else if (s_settings.number_size >= 4) {
+      s_settings.number_size = 5;
+      settings_need_write = true;
+    }
+    // Keep this migration separate from the persisted Settings structure so it
+    // cannot replay when a later unrelated setting is saved.
+    persist_write_bool(PERSIST_COMPACT_NUMBER_SIZES, true);
+  }
+#endif
   if (normalize_settings()) settings_need_write = true;
   // Commit all migrations and normalization in one flash write.
   if (settings_need_write) {
