@@ -2272,14 +2272,13 @@ static void mark_shake_content_dirty(void) {
   // Only the on-shake icon mode changes the background.
   if (s_settings.shake_mode == 0) layer_mark_dirty(s_bg_layer);
 
-  // Icon appearance changes the date/temp fallback lane, even when the text
-  // itself is always visible. City text remains deliberately non-blocking.
+  // Redraw the complication only when its own visibility depends on shaking.
+  // Always-visible date/temp text does not need a second paint just because
+  // weather icons were briefly shown.
   bool complication_depends_on_shake =
     s_settings.date_visible == 2 ||
     s_settings.temp_visible == 2 ||
-    s_settings.city_display_mode == 1 ||
-    s_settings.date_visible == 0 ||
-    s_settings.temp_visible == 0;
+    s_settings.city_display_mode == 1;
   if (complication_depends_on_shake) {
     invalidate_complication_cache();
     layer_mark_dirty(s_complication_layer);
