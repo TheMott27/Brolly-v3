@@ -125,6 +125,19 @@
                 },
                 {
                     "type": "font",
+                    "name": "FONT_DIGITAL_16",
+                    "file": "fonts/DSEG7Classic-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
                     "name": "FONT_DIGITAL_19",
                     "file": "fonts/DSEG7Classic-Regular.ttf",
                     "targetPlatforms": [
@@ -139,6 +152,19 @@
                 {
                     "type": "font",
                     "name": "FONT_DIGITAL_22",
+                    "file": "fonts/DSEG7Classic-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_DIGITAL_24",
                     "file": "fonts/DSEG7Classic-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
@@ -177,7 +203,33 @@
                 },
                 {
                     "type": "font",
+                    "name": "FONT_STANDARD_16",
+                    "file": "fonts/Roboto-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
                     "name": "FONT_STANDARD_22",
+                    "file": "fonts/Roboto-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_STANDARD_24",
                     "file": "fonts/Roboto-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
@@ -242,6 +294,19 @@
                 },
                 {
                     "type": "font",
+                    "name": "FONT_TRADITIONAL_20",
+                    "file": "fonts/Lora-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
                     "name": "FONT_TRADITIONAL_23",
                     "file": "fonts/Lora-Regular.ttf",
                     "targetPlatforms": [
@@ -256,6 +321,19 @@
                 {
                     "type": "font",
                     "name": "FONT_TRADITIONAL_26",
+                    "file": "fonts/Lora-Regular.ttf",
+                    "targetPlatforms": [
+                        "basalt",
+                        "emery",
+                        "chalk",
+                        "gabbro"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9]"
+                },
+                {
+                    "type": "font",
+                    "name": "FONT_TRADITIONAL_27",
                     "file": "fonts/Lora-Regular.ttf",
                     "targetPlatforms": [
                         "basalt",
@@ -1234,5 +1312,5 @@
             "watchface": true
         }
     },
-    "version": "3.4.7"
+    "version": "3.5.0"
 }
