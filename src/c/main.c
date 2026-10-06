@@ -1,4 +1,4 @@
-// Brolly v2.0.0 — main.c
+// Brolly v3.4.7 — main.c
 // Complete watchface implementation for Pebble (Aplite/Basalt/Emery)
 
 #include <pebble.h>
