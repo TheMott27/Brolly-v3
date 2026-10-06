@@ -86,6 +86,7 @@ static int round_content_radius(int half_extent) {
 // AppMessage keys used only for settings snapshot synchronisation.
 #define KEY_REQUEST_SETTINGS  163
 #define KEY_SETTINGS_SNAPSHOT 164
+#define KEY_FORECAST_START_HOUR 166
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AppMessage inbox/outbox sizes
@@ -168,6 +169,9 @@ typedef struct {
   // False keeps icons at the current number font's rendered pixel height.
   // Reuses this final legacy byte to preserve persisted Settings layout.
   bool    icon_size_manual_override;
+  // Extended hour-marker size: 0=large/current, 1=medium, 2=small.
+  // Kept at the end so older persisted Settings records remain compatible.
+  uint8_t extended_marker_size;
 } Settings;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +229,12 @@ static int8_t    s_icons[24];
 #define NUMBERS_VISIBILITY_SHIFT          4
 #define NUMBERS_VISIBILITY_MASK           0x30
 #define LEGACY_HIDE_DIAGONAL_NUMBERS_MASK 0x80
+
+typedef enum {
+  EXTENDED_MARKER_SIZE_LARGE = 0,
+  EXTENDED_MARKER_SIZE_MEDIUM = 1,
+  EXTENDED_MARKER_SIZE_SMALL = 2
+} ExtendedMarkerSize;
 
 typedef enum {
   NUMBERS_VISIBILITY_SHOW_ALL = 0,
@@ -292,6 +302,10 @@ static bool normalize_settings(void) {
   if (s_settings.sunrise_marker_visible > 2) { s_settings.sunrise_marker_visible = 0; changed = true; }
   if (s_settings.city_display_mode > 2) { s_settings.city_display_mode = 1; changed = true; }
   if (s_settings.icon_color_mode > 3) { s_settings.icon_color_mode = 0; changed = true; }
+  if (s_settings.extended_marker_size > EXTENDED_MARKER_SIZE_SMALL) {
+    s_settings.extended_marker_size = EXTENDED_MARKER_SIZE_MEDIUM;
+    changed = true;
+  }
   return changed;
 }
 
@@ -319,6 +333,9 @@ static char      s_city_name[32] = "";
 static char      s_custom_location[64] = "";
 static int8_t    s_sunrise_hour = 6,  s_sunrise_min = 0;
 static int8_t    s_sunset_hour  = 18, s_sunset_min  = 0;
+// Hour represented by s_icons[0]. The companion receives a rolling forecast,
+// so the array does not necessarily start at the current watch hour.
+static int8_t    s_forecast_start_hour = -1;
 
 static struct tm s_last_time;
 static bool      s_bt_connected = true;
@@ -330,11 +347,6 @@ static GPoint s_hour_marker_outer[12];
 
 // Perimeter point cache: pre-computed once at init (screen size never changes)
 static GPoint s_perimeter_cache[12];
-
-// The exact 12 icon codes currently represented around the dial. Comparing
-// this rendered window avoids raw-array false negatives when an hour advances.
-static int8_t s_displayed_icon_window[12];
-static bool s_displayed_icon_window_valid = false;
 
 // Consolidated rainbow colour array (shared by all colour-mode-2 branches)
 static const GColor8 s_rainbow_colors[12] = {
@@ -352,9 +364,10 @@ static const GColor8 s_rainbow_colors[12] = {
   { .argb = 0xF2 }, // h=11 rose
 };
 
-// Select the future rolling-forecast offset represented by a dial position.
-// The companion now sends a window beginning at the current forecast hour,
-// so index 0 means the present hour and later indices are future hours.
+// Select the rolling-forecast-array offset represented by a dial position.
+// The array begins at s_forecast_start_hour, not necessarily the current watch
+// hour. Without this anchor, an 23:00 update viewed at 01:00 maps 08:00 to
+// 06:00 and can show a moon after the sunrise marker.
 static int forecast_hour_for_dial_position(int dial_hour, int current_hour) {
   int am_hour = dial_hour;
   int pm_hour = am_hour + 12;
@@ -371,24 +384,12 @@ static int forecast_hour_for_dial_position(int dial_hour, int current_hour) {
     target_hour = am_hour + 24;
   }
 
-  return target_hour - current_hour;
-}
-
-static bool refresh_displayed_icon_window(int current_hour) {
-  int8_t next_window[12];
-  bool changed = !s_displayed_icon_window_valid;
-  for (int dial_hour = 0; dial_hour < 12; dial_hour++) {
-    int forecast_hour = forecast_hour_for_dial_position(dial_hour, current_hour);
-    next_window[dial_hour] = s_icons[forecast_hour];
-    if (!changed && next_window[dial_hour] != s_displayed_icon_window[dial_hour]) {
-      changed = true;
-    }
-  }
-  if (changed) {
-    memcpy(s_displayed_icon_window, next_window, sizeof(s_displayed_icon_window));
-    s_displayed_icon_window_valid = true;
-  }
-  return changed;
+  int start_hour = s_forecast_start_hour;
+  // Use current-hour behaviour only while retaining an old pre-anchor cache.
+  // The first successful update from this version overwrites that cache.
+  if (start_hour < 0 || start_hour > 23) start_hour = current_hour;
+  if (target_hour < start_hour) target_hour += 24;
+  return target_hour - start_hour;
 }
 
 // Font cache
@@ -546,6 +547,16 @@ static int standard_hour_marker_length(void) {
 #endif
 }
 
+static int extended_hour_marker_length(void) {
+  int length = standard_hour_marker_length() * 12;
+  if (s_settings.extended_marker_size == EXTENDED_MARKER_SIZE_MEDIUM) {
+    length /= 2;
+  } else if (s_settings.extended_marker_size == EXTENDED_MARKER_SIZE_SMALL) {
+    length = standard_hour_marker_length();
+  }
+  return length;
+}
+
 static bool angle_has_extended_hour_marker(int32_t angle) {
   // Extend a solar marker only when it lands exactly on a long hour marker,
   // not merely somewhere within that hour's visual sector.
@@ -651,6 +662,19 @@ static uint32_t get_font_resource_id(uint8_t font_id, uint8_t size_idx) {
 #if defined(PBL_PLATFORM_BASALT) || defined(PBL_PLATFORM_CHALK)
   // Basalt's compact rectangle and Chalk's usable circular dial need a smaller
   // optical baseline. Size 3 intentionally equals their former Size 1.
+#if defined(PBL_PLATFORM_CHALK)
+  // Twelve Roman labels must share a 180px circumference. Preserve five real
+  // slider steps, but cap the largest Chalk label at 30px: 36px makes the
+  // measured XI/XII/I and VII/VIII/VI ink overlap by construction.
+  if (font_id == 6) {
+    static const uint32_t chalk_roman_serif_resources[5] = {
+      RESOURCE_ID_FONT_ROMAN_SERIF_17, RESOURCE_ID_FONT_ROMAN_SERIF_23,
+      RESOURCE_ID_FONT_ROMAN_SERIF_26, RESOURCE_ID_FONT_ROMAN_SERIF_28,
+      RESOURCE_ID_FONT_ROMAN_SERIF_30
+    };
+    return size_idx < 5 ? chalk_roman_serif_resources[size_idx] : 0;
+  }
+#endif
   static const uint32_t font_resources[7][5] = {
     { RESOURCE_ID_FONT_DIGITAL_14, RESOURCE_ID_FONT_DIGITAL_18,
       RESOURCE_ID_FONT_DIGITAL_18, RESOURCE_ID_FONT_DIGITAL_26,
@@ -1151,11 +1175,18 @@ static void draw_inittick_hand(GContext *ctx, GPoint center, GPoint tip,
 // While measuring, the scratch draws are overwritten by the normal paint that
 // follows, so nothing is visible to the user.
 static void measure_ink_bounds(GContext *ctx, GFont font, int sw, int sh) {
+  // A top-left scratch box is clipped by a round framebuffer. For Roman Serif
+  // on round watches, scan in the centre of the dial so the measured bounds
+  // include every visible serif and letter rather than a clipped fragment.
+  const int SW = 80, SH = 80;
+#ifdef PBL_ROUND
+  const bool round_serif = number_font_id() == 6;
+  const int SX = round_serif ? (sw - SW) / 2 : 0;
+  const int SY = round_serif ? (sh - SH) / 2 : 0;
+#else
+  const int SX = 0, SY = 0;
   (void)sw; (void)sh;
-  // Scratch box near top-left. Must be large enough for any digit at any size.
-  // We use 80x80 to match the content-size query rect exactly, so that
-  // max_y is always relative to the same origin as box.h.
-  const int SX = 0, SY = 0, SW = 80, SH = 80;
+#endif
 
   for (int h = 0; h < 12; h++) {
     InkBounds *ib = &s_ink[h];
@@ -1287,6 +1318,67 @@ static int displayed_number_height(void) {
   return max_height > 0 ? max_height : 26;
 }
 
+#ifdef PBL_ROUND
+// Roman Serif has wide horizontal glyph groups (notably VIII and XII) and
+// taller serif overshoots than the other dial fonts.  Its round layout must
+// be based on the measured *ink*, rather than an icon-sized text frame: a
+// frame's top padding otherwise pushes the visible glyph too far outward.
+//
+// The selected centre radius is bounded twice:
+//   1. The ink's furthest corner stays within the circular display.
+//   2. Its outward radial edge stops before the inner end of the relevant
+//      hour marker, including the marker's 3px stroke and a clear 2px gap.
+// This applies to every selected Roman Serif size, including side-by-side.
+static GRect round_roman_serif_text_rect(int hour_position, InkBounds ib) {
+  int ink_w = ib.box_w - ib.left - ib.right;
+  int ink_h = ib.box_h - ib.top - ib.bottom;
+  if (ink_w < 1) ink_w = 1;
+  if (ink_h < 1) ink_h = 1;
+
+  int half_w = (ink_w + 1) / 2;
+  int half_h = (ink_h + 1) / 2;
+  int32_t angle = TRIG_MAX_ANGLE * hour_position / 12;
+  int radial_half_extent =
+    ((abs(sin_lookup(angle)) * half_w) +
+     (abs(cos_lookup(angle)) * half_h)) / TRIG_MAX_RATIO;
+  int tangent_half_extent =
+    ((abs(cos_lookup(angle)) * half_w) +
+     (abs(sin_lookup(angle)) * half_h)) / TRIG_MAX_RATIO;
+
+  // Keep the *four corners* of the measured ink inside the circle. This is
+  // much less conservative than subtracting its full diagonal from the dial
+  // radius, so large Roman labels can occupy their correct outer sectors.
+  int safe_circle_radius = round_radius() - round_px(2);
+  int edge_sq = safe_circle_radius * safe_circle_radius -
+                tangent_half_extent * tangent_half_extent;
+  if (edge_sq < 1) edge_sq = 1;
+  int radius = isqrt_int(edge_sq) - radial_half_extent;
+
+  if (s_settings.display_hour_markers) {
+    int marker_length = hour_marker_is_extended(hour_position)
+      ? extended_hour_marker_length() : standard_hour_marker_length();
+
+    // Marker endpoints are line centres.  Three pixels clear the 3px marker
+    // stroke and preserve a two-pixel visual separation from numeral ink.
+    int marker_limit = round_radius() - marker_length - 3 - radial_half_extent;
+    if (radius > marker_limit) radius = marker_limit;
+  }
+
+  // Keep a defensive inner lower bound if a future font is unexpectedly large.
+  if (radius < round_px(20)) radius = round_px(20);
+
+  GPoint ink_center = polar_to_point(
+    s_dial_center, TRIG_MAX_ANGLE * hour_position / 12, radius);
+
+  // The 80px layout frame prevents Pebble's font metrics from clipping a
+  // Roman glyph.  The baseline is offset by the measured top padding so the
+  // *visible* ink, not its invisible frame, is centred on the radial point.
+  return GRect(ink_center.x - 40,
+               ink_center.y - ink_h / 2 - ib.top,
+               80, 80);
+}
+#endif
+
 // BG layer: background fill, markers, numbers/icons
 static void bg_layer_update(Layer *layer, GContext *ctx) {
   GRect bounds = layer_get_bounds(layer);
@@ -1337,7 +1429,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
     for (int i = 0; i < 12; i++) {
       int marker_length = standard_hour_marker_length();
       if (hour_marker_is_extended(i)) {
-        marker_length *= 12;
+        marker_length = extended_hour_marker_length();
       }
       GPoint marker_inner = marker_inner_toward_center(
         s_dial_center, s_hour_marker_outer[i], marker_length);
@@ -1376,7 +1468,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       if (angle_has_extended_hour_marker(sr_angle)) {
         // At an extended diagonal hour position, the sunrise marker follows
         // the same radial length as that hour marker.
-        sr_marker_length = standard_hour_marker_length() * 12;
+        sr_marker_length = extended_hour_marker_length();
       }
       GPoint sr_inner = marker_inner_toward_center(
         center, sr_outer, sr_marker_length);
@@ -1398,7 +1490,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       if (angle_has_extended_hour_marker(ss_angle)) {
         // At an extended diagonal hour position, the sunset marker follows
         // the same radial length as that hour marker.
-        ss_marker_length = standard_hour_marker_length() * 12;
+        ss_marker_length = extended_hour_marker_length();
       }
       GPoint ss_inner = marker_inner_toward_center(
         center, ss_outer, ss_marker_length);
@@ -1406,12 +1498,6 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       graphics_context_set_stroke_width(ctx, 2);
       graphics_draw_line(ctx, ss_outer, ss_inner);
     }
-  }
-
-    // Numbers or icons. The visible forecast codes are prepared only when
-  // weather data or the current hour changes, not recalculated per draw branch.
-  if (!s_displayed_icon_window_valid) {
-    refresh_displayed_icon_window(s_last_time.tm_hour);
   }
 
   // Determine icon size in pixels. By default the icon exactly matches the
@@ -1455,8 +1541,10 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       // Number uses smallest font (forced in get_number_font).
       // Icon uses sbs_icon_sz.
       // Layout: number at edge, icon adjacent with 2px gap.
+#ifndef PBL_ROUND
       GPoint edge = s_perimeter_cache[h];
       int gap = sun_inset * 3 / 2;
+#endif
 
       InkBounds ib = s_ink[h];
       if (!ib.valid) {
@@ -1473,9 +1561,14 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       if (ink_h < 1) ink_h = 1;
 
       // Number position
+#ifndef PBL_ROUND
       int rx, ry;
+#endif
       GRect text_rect;
 #ifdef PBL_ROUND
+      if (number_font_id() == 6) {
+        text_rect = round_roman_serif_text_rect(h, ib);
+      } else {
 #if defined(PBL_PLATFORM_CHALK)
       // Chalk numerals use the weather icon's literal polar centre and
       // top-left frame. Roman Sans needs a full-height layout box because its
@@ -1498,6 +1591,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       text_rect = GRect(icon_center.x - 40, text_y,
                         80, number_font_id() == 5 ? 80 : icon_sz);
 #endif
+      }
 #else
       if (h == 11 || h == 0 || h == 1) {
         ry = gap - ib.top;
@@ -1576,10 +1670,19 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       ioy = icon_pt.y - sbs_icon_sz / 2;
 #else
       int num_ink_cx = rx + ib.left + ink_w / 2;
-      if (h == 11 || h == 0 || h == 1) {
+      // At diagonal clock positions, place the icon in the inside corner of
+      // the numeral: 1→bottom-left, 5→top-left, 7→top-right, 11→bottom-right.
+      // This follows the radial path toward the dial centre instead of leaving
+      // the icon directly above or below the corner numeral.
+      if (h == 1 || h == 5 || h == 7 || h == 11) {
+        iox = (h < 6) ? rx + ib.left - 4 - sbs_icon_sz
+                      : rx + ib.left + ink_w + 4;
+        ioy = (h == 5 || h == 7) ? ry + ib.top - 4 - sbs_icon_sz
+                                  : ry + ib.top + ink_h + 4;
+      } else if (h == 0) {
         ioy = ry + ib.top + ink_h + 4;
         iox = num_ink_cx - sbs_icon_sz / 2;
-      } else if (h == 5 || h == 6 || h == 7) {
+      } else if (h == 6) {
         ioy = ry + ib.top - 4 - sbs_icon_sz;
         iox = num_ink_cx - sbs_icon_sz / 2;
       } else if (h == 8 || h == 9 || h == 10) {
@@ -1591,8 +1694,9 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       }
 #endif
 
-      // Use the prepared rolling forecast code for this dial position.
-      int8_t icon_code = s_displayed_icon_window[h];
+      // Resolve this position in the timestamp-anchored rolling forecast.
+      int8_t icon_code = s_icons[forecast_hour_for_dial_position(
+        h, s_last_time.tm_hour)];
       GPathIconID gpath_id = icon_code_to_gpath(icon_code);
 
       // Determine icon colour
@@ -1615,8 +1719,9 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       }
 
     } else if (draw_icons || (side_by_side && !show_number)) {
-      // Use the prepared rolling forecast code for this dial position.
-      int8_t icon_code = s_displayed_icon_window[h];
+      // Resolve this position in the timestamp-anchored rolling forecast.
+      int8_t icon_code = s_icons[forecast_hour_for_dial_position(
+        h, s_last_time.tm_hour)];
       GPathIconID gpath_id = icon_code_to_gpath(icon_code);
 
       // Rectangular devices retain their existing edge-anchored icon grid.
@@ -1712,15 +1817,22 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
 
       // Gap from screen edge to visible ink. Must clear the longest marker
       // (4px on Basalt quarter-hour, 10px on Emery) plus a small margin.
+#ifndef PBL_ROUND
       int gap = sun_inset * 3 / 2;
+#endif
 
       // Top-left corner of the (untrimmed) text box. We position so that the
       // visible ink edge sits `gap` from the screen edge, and the ink centre
       // sits on the perimeter ray on the cross axis.
+#ifndef PBL_ROUND
       int rx, ry;
+#endif
       GRect text_rect;
 
 #ifdef PBL_ROUND
+      if (number_font_id() == 6) {
+        text_rect = round_roman_serif_text_rect(h, ib);
+      } else {
 #if defined(PBL_PLATFORM_CHALK)
       // Chalk numerals use the weather icon's literal polar centre and
       // top-left frame. Roman Sans needs a full-height layout box because its
@@ -1743,6 +1855,7 @@ static void bg_layer_update(Layer *layer, GContext *ctx) {
       text_rect = GRect(icon_center.x - 40, text_y,
                         80, number_font_id() == 5 ? 80 : icon_sz);
 #endif
+      }
 #else
       if (h == 11 || h == 0 || h == 1) {
         ry = gap - ib.top;
@@ -2342,7 +2455,7 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
       layer_mark_dirty(s_complication_layer);
     }
   }
-  if (hour_changed && refresh_displayed_icon_window(tick_time->tm_hour)) {
+  if (hour_changed) {
     layer_mark_dirty(s_bg_layer);
   }
 }
@@ -2476,6 +2589,7 @@ static void send_settings_snapshot(void) {
   dict_write_int32(out, 149, gcolor_to_rgb(s_settings.sunset_marker_color));
   dict_write_uint8(out, 150, s_settings.number_size);
   dict_write_uint8(out, 151, manual_icon_size());
+  dict_write_uint8(out, 165, s_settings.extended_marker_size);
   dict_write_uint8(out, 152, s_settings.icon_size_manual_override ? 0 : 1);
   dict_write_uint8(out, 154, (uint8_t)numbers_visibility());
   dict_write_uint8(out, 153, s_settings.icon_color_mode);
@@ -2521,6 +2635,16 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
     }
   }
 
+  t = dict_find(iter, KEY_FORECAST_START_HOUR);
+  if (t) {
+    int8_t value = (int8_t)t->value->int32;
+    if (value >= 0 && value <= 23 && s_forecast_start_hour != value) {
+      s_forecast_start_hour = value;
+      bg_dirty = true;
+      complication_dirty = true;
+    }
+  }
+
   t = dict_find(iter, 58); // KEY_TEMP_C
   if (t) {
     int8_t value = (int8_t)t->value->int32;
@@ -2555,7 +2679,6 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
 
   if (icons_changed) {
     persist_write_data(PERSIST_ICONS, s_icons, sizeof(s_icons));
-    s_displayed_icon_window_valid = false;
     bg_dirty = true;
     complication_dirty = true;
   }
@@ -2756,6 +2879,18 @@ static void inbox_received_handler(DictionaryIterator *iter, void *context) {
       complication_dirty = true;
     }
   }
+  t = dict_find(iter, 165); // KEY_EXTENDED_MARKER_SIZE
+  if (t) {
+    uint8_t value = (uint8_t)t->value->int32;
+    if (value > EXTENDED_MARKER_SIZE_SMALL) {
+      value = EXTENDED_MARKER_SIZE_MEDIUM;
+    }
+    if (s_settings.extended_marker_size != value) {
+      s_settings.extended_marker_size = value;
+      settings_changed = true;
+      bg_dirty = true;
+    }
+  }
   UPDATE_U8_SETTING(158, display_mode, complication_dirty = true);
 
   t = dict_find(iter, 159); // KEY_CITY_NAME
@@ -2842,6 +2977,7 @@ static void load_default_settings(void) {
   s_settings.city_color             = GColorFromRGB(0x00, 0x00, 0xaa);
   s_settings.icon_color_mode        = 0;   // Single colour
   s_settings.icon_size_manual_override = true;
+  s_settings.extended_marker_size   = EXTENDED_MARKER_SIZE_MEDIUM;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2984,10 +3120,6 @@ static void window_load(Window *window) {
     s_perimeter_cache[h] = get_perimeter_point(center, angle, 0, 0);
 #endif
   }
-
-  // Initialise the exact forecast window represented on the dial.
-  s_displayed_icon_window_valid = false;
-  refresh_displayed_icon_window(s_last_time.tm_hour);
 
   // Subscribe to tick timer
   update_tick_subscription();

@@ -115,6 +115,8 @@ var KEY = {
   CITY_DISPLAY_MODE: 160,
   CITY_COLOR:        161,
   COMPLICATION_LAYER:162,
+  EXTENDED_MARKER_SIZE: 165,
+  FORECAST_START_HOUR: 166,
   // Settings snapshot synchronisation
   REQUEST_SETTINGS:  163,
   SETTINGS_SNAPSHOT: 164,
@@ -190,6 +192,7 @@ var SNAPSHOT_FIELD_MAP = {
   150: 'KEY_NUMBER_SIZE', 151: 'KEY_ICON_SIZE',
   152: 'KEY_ICON_SIZE_SAME_AS_FONT', 153: 'KEY_ICON_COLOR_MODE',
   154: 'KEY_NUMBERS_VISIBILITY',
+  165: 'KEY_EXTENDED_MARKER_SIZE',
   158: 'KEY_DISPLAY_MODE', 160: 'KEY_CITY_DISPLAY_MODE', 161: 'KEY_CITY_COLOR',
   162: 'KEY_COMPLICATION_LAYER'
 };
@@ -236,6 +239,7 @@ var SETTINGS_KEY_MAP = {
   KEY_CITY_DISPLAY_MODE:           KEY.CITY_DISPLAY_MODE,
   KEY_CITY_COLOR:                  KEY.CITY_COLOR,
   KEY_COMPLICATION_LAYER:          KEY.COMPLICATION_LAYER,
+  KEY_EXTENDED_MARKER_SIZE:        KEY.EXTENDED_MARKER_SIZE,
   KEY_DISPLAY_HOUR_MARKERS:        KEY.DISPLAY_HOUR_MARKERS,
   KEY_DISPLAY_MINOR_MARKERS:       KEY.DISPLAY_MINOR_MARKERS
 };
@@ -303,7 +307,7 @@ function decodeWatchSettingsSnapshot(payload) {
 
 function openConfigurationPage(settings) {
   var snapshot = settings || loadFullSettings();
-  var configUrl = 'https://themott27.github.io/Brolly-v3-Settings/v3.4.0/' +
+  var configUrl = 'https://themott27.github.io/Brolly-v3-Settings/v3.4.7/' +
                   '#settings=' + encodeURIComponent(JSON.stringify(snapshot));
   Pebble.openURL(configUrl);
 }
@@ -520,8 +524,12 @@ function processWeatherData(data) {
   var hourly = data.hourly || {};
   var codes = hourly.weather_code;
   var isDays = hourly.is_day;
+  var hourlyTimes = hourly.time;
+  var forecastStart = Array.isArray(hourlyTimes)
+    ? parseLocalTime(hourlyTimes[0]) : null;
   var hasHourly = Array.isArray(codes) && Array.isArray(isDays) &&
-                  codes.length >= 24 && isDays.length >= 24;
+                  codes.length >= 24 && isDays.length >= 24 &&
+                  forecastStart !== null;
   var icons = new Array(24);
 
   // forecast_hours starts at the current forecast hour, not midnight. The
@@ -534,6 +542,7 @@ function processWeatherData(data) {
   }
 
   var current = data.current || {};
+  var locationNow = typeof current.time === 'string' ? current.time : '';
   var rawTemp = Number(current.temperature_2m);
   var tempC = Math.round(rawTemp);
   var tempF = Math.round(tempC * 9 / 5 + 32);
@@ -543,7 +552,6 @@ function processWeatherData(data) {
   // Use the next actual solar event so an evening update does not restore a
   // sunrise that has already passed.
   var daily = data.daily || {};
-  var locationNow = typeof current.time === 'string' ? current.time : '';
   var sunrise = parseLocalTime(nextDailyTime(daily.sunrise, locationNow));
   var sunset = parseLocalTime(nextDailyTime(daily.sunset, locationNow));
 
@@ -553,8 +561,11 @@ function processWeatherData(data) {
     for (var k = 0; k < 24; k++) {
       msg[k] = icons[k]; // KEY_ICON_0..23 = numeric keys 0..23
     }
+    // Map the dial from Open-Meteo's actual rolling-window start. Otherwise,
+    // for example, a 23:00 update viewed at 01:00 maps 08:00 to 06:00.
+    msg[KEY.FORECAST_START_HOUR] = forecastStart.hour;
   } else {
-    console.log('Weather response missing a complete rolling hourly forecast; retaining last icons');
+    console.log('Weather response missing a complete timestamped hourly forecast; retaining last icons');
   }
   if (hasTemp) {
     msg[KEY.TEMP_C] = tempC;
@@ -764,8 +775,13 @@ function sendSettingsToWatch(settings, previousSettings) {
     var hadPrevious = previousSettings.hasOwnProperty(strKey);
     var previousValue = hadPrevious
       ? normalizedSettingValue(strKey, previousSettings[strKey]) : undefined;
-    if (hadPrevious && previousValue === nextValue) return;
-    changedSettings[strKey] = nextValue;
+    if (!hadPrevious || previousValue !== nextValue) {
+      changedSettings[strKey] = nextValue;
+    }
+    // Always send the complete saved configuration. The watchface can be
+    // reloaded or replaced while the companion's cached snapshot remains
+    // intact; comparing against that cache would make the first Save a no-op
+    // and leave the watch on defaults.
     msg[SETTINGS_KEY_MAP[strKey]] = nextValue;
   });
 

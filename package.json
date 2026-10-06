@@ -68,6 +68,8 @@
             "KEY_NUMBER_FONT": 121,
             "KEY_NUMBER_SIZE": 150,
             "KEY_OWM_API_KEY": 156,
+            "KEY_EXTENDED_MARKER_SIZE": 165,
+            "KEY_FORECAST_START_HOUR": 166,
             "KEY_REQUEST_SETTINGS": 163,
             "KEY_SECONDS_HAND_COLOR": 141,
             "KEY_SECONDS_HAND_MODE": 142,
@@ -1129,6 +1131,16 @@
                 },
                 {
                     "type": "font",
+                    "name": "FONT_ROMAN_SERIF_28",
+                    "file": "fonts/RomanSerif-Regular.ttf",
+                    "targetPlatforms": [
+                        "chalk"
+                    ],
+                    "compatibility": "2.7",
+                    "characterRegex": "[0-9IVX]"
+                },
+                {
+                    "type": "font",
                     "name": "FONT_ROMAN_SERIF_36",
                     "file": "fonts/RomanSerif-Regular.ttf",
                     "targetPlatforms": [
@@ -1222,5 +1234,5 @@
             "watchface": true
         }
     },
-    "version": "3.4.0"
+    "version": "3.4.7"
 }
